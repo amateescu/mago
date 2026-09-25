@@ -242,33 +242,48 @@ fn find_methods(
     }
     writer.write_u32(fields);
 
+    let accept = |class_like: &ClassLikeMetadata, declaring: &MethodIdentifier| {
+        if declared_only && declaring.get_class_name() != class_like.name {
+            return None;
+        }
+
+        let metadata = codebase.get_method_by_id(declaring)?;
+        if !attributes.is_empty()
+            && !metadata.attributes.iter().any(|attribute| {
+                attributes.iter().any(|requested| attribute.name.as_bytes().eq_ignore_ascii_case(requested.as_bytes()))
+            })
+        {
+            return None;
+        }
+
+        Some(metadata)
+    };
+
     let mut scanned_classes = 0usize;
     let mut scanned_methods = 0usize;
-    let mut matches = Vec::new();
+    let mut matches: Vec<(Word, Word, &FunctionLikeMetadata)> = Vec::new();
     let mut collect = |class_like: &ClassLikeMetadata| {
         scanned_classes += 1;
+        // Method names are the map's lowercase keys, so an exact name is one
+        // lookup. Only a prefix walks every method of the class-like.
+        if !prefix {
+            if let Some((method_name, declaring)) = class_like.declaring_method_ids.get_key_value(&pattern) {
+                scanned_methods += 1;
+                if let Some(metadata) = accept(class_like, declaring) {
+                    matches.push((class_like.name, *method_name, metadata));
+                }
+            }
+
+            return;
+        }
+
         for (method_name, declaring) in &class_like.declaring_method_ids {
             scanned_methods += 1;
-            let matches_name =
-                if prefix { method_name.as_bytes().starts_with(pattern.as_bytes()) } else { *method_name == pattern };
-            if !matches_name || (declared_only && declaring.get_class_name() != class_like.name) {
-                continue;
-            }
-
-            let Some(metadata) = codebase.get_method_by_id(declaring) else {
-                continue;
-            };
-            if !attributes.is_empty()
-                && !metadata.attributes.iter().any(|attribute| {
-                    attributes
-                        .iter()
-                        .any(|requested| attribute.name.as_bytes().eq_ignore_ascii_case(requested.as_bytes()))
-                })
+            if method_name.as_bytes().starts_with(pattern.as_bytes())
+                && let Some(metadata) = accept(class_like, declaring)
             {
-                continue;
+                matches.push((class_like.name, *method_name, metadata));
             }
-
-            matches.push((class_like.name, *method_name, *declaring));
         }
     };
 
@@ -279,8 +294,27 @@ fn find_methods(
             }
         }
         (METHOD_SEARCH_DESCENDANTS, Some(class)) => {
+            // The ancestry test of `is_instance_of`, inlined: the class is
+            // lowercase already and every class-like is in hand, so nothing is
+            // interned or looked up per class-like. The alias fallback applies
+            // only when the class is not itself a known class-like.
+            let aliased = if codebase.class_likes.contains_key(&class) {
+                None
+            } else {
+                codebase.class_like_aliases.get(&class).copied()
+            };
+            let descends = |class_like: &ClassLikeMetadata, parent: Word| {
+                class_like.name == parent
+                    || class_like.all_parent_classes.contains(&parent)
+                    || class_like.all_parent_interfaces.contains(&parent)
+                    || class_like.used_traits.contains(&parent)
+                    || class_like.require_extends.contains(&parent)
+                    || class_like.require_implements.contains(&parent)
+            };
             for class_like in codebase.class_likes.values() {
-                if class_like.name != class && codebase.is_instance_of(class_like.name.as_bytes(), class.as_bytes()) {
+                if class_like.name != class
+                    && (descends(class_like, class) || aliased.is_some_and(|actual| descends(class_like, actual)))
+                {
                     collect(class_like);
                 }
             }
@@ -299,22 +333,14 @@ fn find_methods(
             matches.len()
         )));
     }
-    matches.sort_unstable_by(|(left_class, left_method, _), (right_class, right_method, _)| {
-        left_class
-            .as_bytes()
-            .cmp(right_class.as_bytes())
-            .then_with(|| left_method.as_bytes().cmp(right_method.as_bytes()))
-    });
+    matches.sort_unstable_by_key(|(class_name, method_name, _)| (*class_name, *method_name));
 
     writer.write_u32(matches.len() as u32);
-    for (class_name, method_name, declaring) in &matches {
+    for (class_name, method_name, metadata) in &matches {
         let class_like = codebase
             .class_likes
             .get(class_name)
             .ok_or_else(|| protocol("method projection references a missing class-like"))?;
-        let metadata = codebase
-            .get_method_by_id(declaring)
-            .ok_or_else(|| protocol("method projection references missing method metadata"))?;
         write_method_projection(writer, class_like, *method_name, metadata, fields, codebase, session)?;
     }
 

@@ -147,8 +147,15 @@ final class Attribute
 #[Attribute(Attribute::TARGET_METHOD)]
 final class FrameworkInitializer {}
 
+trait FrameworkLifecycleTrait
+{
+    public function resetFramework(): void {}
+}
+
 class FrameworkTestCase
 {
+    use FrameworkLifecycleTrait;
+
     protected ExternalResult $framework;
 
     #[FrameworkInitializer]

@@ -784,6 +784,11 @@ final class InvocationClassInitializerProvider implements ClassInitializerProvid
                 fields: MethodFields::NAMES,
                 declaredOnly: true,
             );
+            $traitUsers = $context->codebase->findMethods(
+                descendantsOf: 'FrameworkLifecycleTrait',
+                name: 'resetFramework',
+                fields: 0,
+            );
             if (
                 count($complete) !== 1
                 || !$complete[0]->has(MethodFields::ALL)
@@ -796,6 +801,10 @@ final class InvocationClassInitializerProvider implements ClassInitializerProvid
                 || count($descendants) !== 1
                 || $descendants[0]->method->class !== 'ManagedTestCase'
                 || $descendants[0]->identifier->class !== 'ManagedTestCase'
+                || count($traitUsers) !== 2
+                || $traitUsers[0]->method->class !== 'FrameworkTestCase'
+                || $traitUsers[1]->method->class !== 'ManagedTestCase'
+                || $traitUsers[1]->identifier->class !== 'FrameworkLifecycleTrait'
             ) {
                 throw new RuntimeException('Projected descendant method filtering returned an incorrect result.');
             }
